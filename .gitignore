@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.env
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Claude
+.claude/
+CLAUDE.md
+
+# Data (CSV や被験者データを誤って push しないように)
+*.CSV
+*.csv
+!sample_*.csv
+
+# Outputs
+*.zip
+analysis/
+output/
