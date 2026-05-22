@@ -2205,7 +2205,7 @@ def export_condition_mean(files: dict[str, FileData], cfg: dict, group_keys: tup
 
 def tab_ecg(state: dict, cfg: dict) -> None:
     """ECG / Heart チャンネルから心拍数・HRV を計算するタブ。"""
-    st.header("❤️ ECG Analysis")
+    st.header("ECG Analysis")
     st.caption("Channel Type が `ECG` のチャンネルから心拍数 (HR) と HRV (SDNN/RMSSD/pNN50) を計算します。"
                "アーティファクト除去 (大ピーク除去) は ECG の R 波を消す可能性があるので、サイドバーで OFF にすることを推奨します。")
     files = filter_files(state["files"], cfg)
@@ -2465,7 +2465,7 @@ def main() -> None:
         "1. File Overview", "2. Channel Settings", "3. Waveform",
         "4. FFT / Spectrogram", "5. Band Power", "6. Per-file Summary",
         "7. Multi-file Comparison", "8. Group Comparison", "9. Channel Quality",
-        "10. ❤️ ECG Analysis", "11. FFT CSV Export", "12. Export Report",
+        "10. ECG Analysis", "11. FFT CSV Export", "12. Export Report",
     ])
     with tabs[0]:
         tab_overview(state, cfg)
