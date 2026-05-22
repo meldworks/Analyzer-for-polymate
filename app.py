@@ -29,59 +29,12 @@ import streamlit as st
 from plotly.subplots import make_subplots
 from scipy import signal
 
-# 並び替え用コンポーネント (任意)
+# 表内ドラッグ&ドロップ並び替え + 編集用コンポーネント
 try:
-    from streamlit_sortables import sort_items  # type: ignore
-    HAS_SORTABLES = True
+    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode  # type: ignore
+    HAS_AGGRID = True
 except Exception:
-    HAS_SORTABLES = False
-
-
-# streamlit-sortables の見た目を Streamlit の dark テーマと馴染ませる CSS
-SORTABLE_CSS = """
-.sortable-component {
-    background: transparent !important;
-    border: none !important;
-    padding: 0 !important;
-}
-.sortable-container {
-    background: transparent !important;
-    border: 1px solid rgba(128, 128, 128, 0.2) !important;
-    border-radius: 8px !important;
-    padding: 6px !important;
-    min-height: 60px !important;
-}
-.sortable-container-header {
-    display: none !important;
-}
-.sortable-container-body {
-    padding: 0 !important;
-}
-.sortable-item {
-    background: rgba(128, 128, 128, 0.08) !important;
-    border: 1px solid rgba(128, 128, 128, 0.15) !important;
-    color: inherit !important;
-    padding: 10px 14px !important;
-    margin: 4px !important;
-    border-radius: 6px !important;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic", sans-serif !important;
-    font-size: 14px !important;
-    font-weight: normal !important;
-    cursor: grab !important;
-    user-select: none !important;
-    transition: background 0.15s ease, border-color 0.15s ease !important;
-    display: flex !important;
-    align-items: center !important;
-}
-.sortable-item:hover {
-    background: rgba(128, 128, 128, 0.18) !important;
-    border-color: rgba(128, 128, 128, 0.4) !important;
-}
-.sortable-item:active {
-    cursor: grabbing !important;
-    background: rgba(128, 128, 128, 0.28) !important;
-}
-"""
+    HAS_AGGRID = False
 
 
 # =====================================================================
@@ -881,114 +834,133 @@ def tab_overview(state: dict, cfg: dict) -> None:
         })
     df_view = pd.DataFrame(rows)
 
-    edited = st.data_editor(
-        df_view, hide_index=True, use_container_width=True,
-        disabled=["File", "Duration[s]", "Channels", "Status"],
-        column_config={
-            "Order": st.column_config.NumberColumn(
-                "Order", help="グラフ表示順 (1 から付ける)。全タブのバーグラフがこの順序で並びます。",
-                min_value=1, step=1, format="%d",
-            ),
-            "Phase": st.column_config.SelectboxColumn(
-                "Phase", options=["none", "before", "after", "pre", "post"], required=False,
-            ),
-        },
-        key="file_overview_editor",
-    )
-    # 書き戻す
-    for _, row in edited.iterrows():
-        fd = state["files"].get(row["File"])
-        if fd is None:
-            continue
-        fd.subject = str(row["Subject"]) if pd.notna(row["Subject"]) else ""
-        fd.task = str(row["Task"]) if pd.notna(row["Task"]) else "Unknown"
-        fd.trial = str(row["Trial"]) if pd.notna(row["Trial"]) else ""
-        fd.phase = str(row["Phase"]) if pd.notna(row["Phase"]) else "none"
-        fd.memo = str(row["Memo"]) if pd.notna(row["Memo"]) else ""
-        if pd.notna(row.get("Order")):
-            try:
-                fd.order = int(row["Order"])
-            except Exception:
-                pass
-        if pd.notna(row["SamplingRate[Hz]"]):
-            try:
-                fd.sampling_rate = float(row["SamplingRate[Hz]"])
-                if fd.raw_dataframe is not None:
-                    n = len(fd.raw_dataframe)
-                    fd.duration = n / fd.sampling_rate if fd.sampling_rate else 0.0
-                    fd.time_array = np.arange(n) / fd.sampling_rate if fd.sampling_rate else None
-            except Exception:
-                pass
+    if HAS_AGGRID:
+        # === AgGrid: 行ドラッグ&ドロップ + インライン編集 ===
+        st.caption("🖱️ **左端の `⋮⋮` ハンドルを掴んで行をドラッグ** すると並び替えできます。Subject/Task/Trial/Phase/Memo/SamplingRate のセルはダブルクリックで編集可能。")
+        gb = GridOptionsBuilder.from_dataframe(df_view)
+        gb.configure_default_column(editable=False, resizable=True, sortable=False, filterable=False)
+        # 左端に drag handle 列 (Order の値を表示) — rowDrag=True でこの列が drag handle になる
+        gb.configure_column("Order", rowDrag=True, lockPosition="left", pinned="left", width=90, headerName="≡  Order")
+        gb.configure_column("File", width=200, lockPosition="left", pinned="left")
+        gb.configure_column("Subject", editable=True, width=110)
+        gb.configure_column("Task", editable=True, width=110)
+        gb.configure_column("Trial", editable=True, width=80)
+        gb.configure_column("Phase", editable=True, width=110,
+                            cellEditor="agSelectCellEditor",
+                            cellEditorParams={"values": ["none", "before", "after", "pre", "post"]})
+        gb.configure_column("Memo", editable=True, width=150)
+        gb.configure_column("Duration[s]", width=100, type=["numericColumn"])
+        gb.configure_column("SamplingRate[Hz]", editable=True, width=130, type=["numericColumn"])
+        gb.configure_column("Unit", width=70)
+        gb.configure_column("Channels", width=85, type=["numericColumn"])
+        gb.configure_column("Status", width=90)
+        gb.configure_grid_options(
+            rowDragManaged=True,
+            animateRows=True,
+            suppressMovableColumns=True,
+            domLayout="normal",
+        )
+        grid_response = AgGrid(
+            df_view,
+            gridOptions=gb.build(),
+            update_mode=GridUpdateMode.MODEL_CHANGED,
+            data_return_mode=DataReturnMode.AS_INPUT,
+            theme="alpine",
+            fit_columns_on_grid_load=False,
+            height=min(80 + 35 * len(df_view), 600),
+            allow_unsafe_jscode=True,
+            reload_data=False,
+            key="file_overview_aggrid",
+        )
+        new_df = grid_response.get("data", df_view)
+        # ドラッグ後の順序を fd.order に反映、編集セルも書き戻す
+        if new_df is not None and len(new_df):
+            for i, row in enumerate(new_df.to_dict("records"), start=1):
+                fd = state["files"].get(row.get("File"))
+                if fd is None:
+                    continue
+                fd.order = i  # 表示順 = 並び順
+                fd.subject = str(row.get("Subject") or "")
+                fd.task = str(row.get("Task") or "Unknown")
+                fd.trial = str(row.get("Trial") or "")
+                fd.phase = str(row.get("Phase") or "none")
+                fd.memo = str(row.get("Memo") or "")
+                sr = row.get("SamplingRate[Hz]")
+                if sr not in (None, "", "None") and not (isinstance(sr, float) and pd.isna(sr)):
+                    try:
+                        fd.sampling_rate = float(sr)
+                        if fd.raw_dataframe is not None:
+                            n = len(fd.raw_dataframe)
+                            fd.duration = n / fd.sampling_rate if fd.sampling_rate else 0.0
+                            fd.time_array = np.arange(n) / fd.sampling_rate if fd.sampling_rate else None
+                    except Exception:
+                        pass
+    else:
+        # フォールバック: 通常の data_editor (AgGrid 未インストール時)
+        st.warning("`streamlit-aggrid` がインストールされていません。`pip install streamlit-aggrid` するとドラッグ&ドロップが使えます。")
+        edited = st.data_editor(
+            df_view, hide_index=True, use_container_width=True,
+            disabled=["File", "Duration[s]", "Channels", "Status"],
+            column_config={
+                "Order": st.column_config.NumberColumn("Order", min_value=1, step=1, format="%d"),
+                "Phase": st.column_config.SelectboxColumn("Phase", options=["none", "before", "after", "pre", "post"], required=False),
+            },
+            key="file_overview_editor",
+        )
+        for _, row in edited.iterrows():
+            fd = state["files"].get(row["File"])
+            if fd is None:
+                continue
+            fd.subject = str(row["Subject"]) if pd.notna(row["Subject"]) else ""
+            fd.task = str(row["Task"]) if pd.notna(row["Task"]) else "Unknown"
+            fd.trial = str(row["Trial"]) if pd.notna(row["Trial"]) else ""
+            fd.phase = str(row["Phase"]) if pd.notna(row["Phase"]) else "none"
+            fd.memo = str(row["Memo"]) if pd.notna(row["Memo"]) else ""
+            if pd.notna(row.get("Order")):
+                try:
+                    fd.order = int(row["Order"])
+                except Exception:
+                    pass
+            if pd.notna(row["SamplingRate[Hz]"]):
+                try:
+                    fd.sampling_rate = float(row["SamplingRate[Hz]"])
+                    if fd.raw_dataframe is not None:
+                        n = len(fd.raw_dataframe)
+                        fd.duration = n / fd.sampling_rate if fd.sampling_rate else 0.0
+                        fd.time_array = np.arange(n) / fd.sampling_rate if fd.sampling_rate else None
+                except Exception:
+                    pass
 
-    # === 並び替え ===
-    with st.expander("🔢 Reorder files (並び替え)", expanded=False):
-        valid_files = [fd for fd in state["files"].values() if not fd.is_fft_csv and fd.status != "Error"]
-        valid_files.sort(key=lambda f: (getattr(f, "order", 0) or 999999, f.file_name))
-
-        if HAS_SORTABLES:
-            st.caption("🖱️ **行をドラッグ&ドロップ** で並び替えできます (各行の左に `⋮⋮` ハンドル)。変更は即座に全タブのグラフに反映されます。")
-
-            # 各行に drag handle 風アイコン + ファイル名 + メタ情報
-            def fmt_item(fd: FileData) -> str:
-                meta_parts = []
-                if fd.subject:
-                    meta_parts.append(f"Subject={fd.subject}")
-                if fd.task:
-                    meta_parts.append(f"Task={fd.task}")
-                if fd.trial:
-                    meta_parts.append(f"Trial={fd.trial}")
-                if fd.phase and fd.phase != "none":
-                    meta_parts.append(f"Phase={fd.phase}")
-                meta = "  ·  ".join(meta_parts)
-                # アイテム文字列は識別キーも兼ねるので、先頭にドラッグハンドル + ファイル名(拡張子無)
-                label = display_file_name(fd.file_name)
-                return f"⋮⋮   {label}" + (f"      —   {meta}" if meta else "")
-
-            items = [fmt_item(fd) for fd in valid_files]
-            # 並び順 ⇄ ファイルのマップ (ラベル文字列 -> FileData)
-            label_to_fd = {item: fd for item, fd in zip(items, valid_files)}
-
-            sorted_items = sort_items(items, direction="vertical", custom_style=SORTABLE_CSS, key="dd_sortable")
-
-            if sorted_items and sorted_items != items:
-                for i, item in enumerate(sorted_items, start=1):
-                    fd = label_to_fd.get(item)
-                    if fd:
-                        fd.order = i
-                st.rerun()
-        else:
-            st.warning("`streamlit-sortables` がインストールされていません。`pip install streamlit-sortables` してください。")
-
-        # クイック並び替えボタン
-        st.markdown("---")
-        st.caption("⚡ クイック並び替え")
-        col_q1, col_q2, col_q3 = st.columns(3)
-        with col_q1:
-            if st.button("🔄 Task 交互", key="auto_alt", help="Task ごとに i 番目を交互に並べる (例: Open-1, Close-1, Open-2, Close-2, ...)", use_container_width=True):
-                by_task: dict[str, list[FileData]] = {}
-                for fd in valid_files:
-                    by_task.setdefault(fd.task, []).append(fd)
-                for lst in by_task.values():
-                    lst.sort(key=lambda f: (f.trial, f.file_name))
-                max_len = max((len(v) for v in by_task.values()), default=0)
-                order_counter = 0
-                for i in range(max_len):
-                    for task in sorted(by_task):
-                        if i < len(by_task[task]):
-                            order_counter += 1
-                            by_task[task][i].order = order_counter
-                st.rerun()
-        with col_q2:
-            if st.button("🔤 名前順", key="reset_order", help="ファイル名のアルファベット順", use_container_width=True):
-                for i, fd in enumerate(sorted(valid_files, key=lambda f: f.file_name), start=1):
+    # === クイック並び替えボタン (一括処理) ===
+    valid_files = [fd for fd in state["files"].values() if not fd.is_fft_csv and fd.status != "Error"]
+    valid_files.sort(key=lambda f: (getattr(f, "order", 0) or 999999, f.file_name))
+    col_q1, col_q2, col_q3 = st.columns(3)
+    with col_q1:
+        if st.button("🔄 Task 交互", key="auto_alt", help="Task ごとに i 番目を交互に並べる (例: Open-1, Close-1, Open-2, Close-2, ...)", use_container_width=True):
+            by_task: dict[str, list[FileData]] = {}
+            for fd in valid_files:
+                by_task.setdefault(fd.task, []).append(fd)
+            for lst in by_task.values():
+                lst.sort(key=lambda f: (f.trial, f.file_name))
+            max_len = max((len(v) for v in by_task.values()), default=0)
+            order_counter = 0
+            for i in range(max_len):
+                for task in sorted(by_task):
+                    if i < len(by_task[task]):
+                        order_counter += 1
+                        by_task[task][i].order = order_counter
+            st.rerun()
+    with col_q2:
+        if st.button("🔤 名前順", key="reset_order", help="ファイル名のアルファベット順", use_container_width=True):
+            for i, fd in enumerate(sorted(valid_files, key=lambda f: f.file_name), start=1):
+                fd.order = i
+            st.rerun()
+    with col_q3:
+        if st.button("⏱ アップロード順", key="upload_order", help="アップロードした順番に戻す", use_container_width=True):
+            for i, fd in enumerate(state["files"].values(), start=1):
+                if not fd.is_fft_csv and fd.status != "Error":
                     fd.order = i
-                st.rerun()
-        with col_q3:
-            if st.button("⏱ アップロード順", key="upload_order", help="アップロードした順番に戻す", use_container_width=True):
-                for i, fd in enumerate(state["files"].values(), start=1):
-                    if not fd.is_fft_csv and fd.status != "Error":
-                        fd.order = i
-                st.rerun()
+            st.rerun()
 
     # 警告類
     fs_set = {fd.sampling_rate for fd in state["files"].values() if fd.sampling_rate}
@@ -2251,6 +2223,7 @@ def render_reset_button(state: dict) -> None:
                         "mc_", "gc2_", "cmp_", "exp_", "bp_", "ba_", "pc_",
                         "ch_target", "preset_", "channel_editor_", "bulk_rename_",
                         "bulk_order_", "prop_", "file_overview_editor",
+                        "file_overview_aggrid", "dd_sortable",
                         "reset_confirm", "wave_", "fft_", "rep_", "file_uploader_",
                         "sb_",  # サイドバーの multiselect (Subject/Task/Trial/Phase/Channels 等)
                     )):
