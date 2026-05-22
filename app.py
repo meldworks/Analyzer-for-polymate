@@ -29,6 +29,60 @@ import streamlit as st
 from plotly.subplots import make_subplots
 from scipy import signal
 
+# 並び替え用コンポーネント (任意)
+try:
+    from streamlit_sortables import sort_items  # type: ignore
+    HAS_SORTABLES = True
+except Exception:
+    HAS_SORTABLES = False
+
+
+# streamlit-sortables の見た目を Streamlit の dark テーマと馴染ませる CSS
+SORTABLE_CSS = """
+.sortable-component {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+}
+.sortable-container {
+    background: transparent !important;
+    border: 1px solid rgba(128, 128, 128, 0.2) !important;
+    border-radius: 8px !important;
+    padding: 6px !important;
+    min-height: 60px !important;
+}
+.sortable-container-header {
+    display: none !important;
+}
+.sortable-container-body {
+    padding: 0 !important;
+}
+.sortable-item {
+    background: rgba(128, 128, 128, 0.08) !important;
+    border: 1px solid rgba(128, 128, 128, 0.15) !important;
+    color: inherit !important;
+    padding: 10px 14px !important;
+    margin: 4px !important;
+    border-radius: 6px !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic", sans-serif !important;
+    font-size: 14px !important;
+    font-weight: normal !important;
+    cursor: grab !important;
+    user-select: none !important;
+    transition: background 0.15s ease, border-color 0.15s ease !important;
+    display: flex !important;
+    align-items: center !important;
+}
+.sortable-item:hover {
+    background: rgba(128, 128, 128, 0.18) !important;
+    border-color: rgba(128, 128, 128, 0.4) !important;
+}
+.sortable-item:active {
+    cursor: grabbing !important;
+    background: rgba(128, 128, 128, 0.28) !important;
+}
+"""
+
 
 # =====================================================================
 # 定数 / 既定値
@@ -871,30 +925,39 @@ def tab_overview(state: dict, cfg: dict) -> None:
         valid_files = [fd for fd in state["files"].values() if not fd.is_fft_csv and fd.status != "Error"]
         valid_files.sort(key=lambda f: (getattr(f, "order", 0) or 999999, f.file_name))
 
-        st.caption("⬆⬇ ボタンで上下に並び替えできます。変更は即座に全タブのグラフに反映されます。")
+        if HAS_SORTABLES:
+            st.caption("🖱️ **行をドラッグ&ドロップ** で並び替えできます (各行の左に `⋮⋮` ハンドル)。変更は即座に全タブのグラフに反映されます。")
 
-        # 上下ボタンで並び替え
-        n = len(valid_files)
-        for idx, fd in enumerate(valid_files):
-            cols = st.columns([1, 1, 8])
-            with cols[0]:
-                # 一番上のファイルは ↑ を無効化
-                if st.button("⬆", key=f"up_{fd.file_name}", disabled=(idx == 0), use_container_width=True):
-                    # idx と idx-1 の order を入れ替え
-                    prev = valid_files[idx - 1]
-                    fd.order, prev.order = prev.order, fd.order
-                    st.rerun()
-            with cols[1]:
-                # 一番下のファイルは ↓ を無効化
-                if st.button("⬇", key=f"down_{fd.file_name}", disabled=(idx == n - 1), use_container_width=True):
-                    nxt = valid_files[idx + 1]
-                    fd.order, nxt.order = nxt.order, fd.order
-                    st.rerun()
-            with cols[2]:
-                # ファイル名 + 補足情報
-                task_info = f"`{fd.task}`" if fd.task else ""
-                trial_info = f" / Trial {fd.trial}" if fd.trial else ""
-                st.markdown(f"**{idx + 1}.** {display_file_name(fd.file_name)} &nbsp; <span style='color:#888;font-size:0.85em'>{task_info}{trial_info}</span>", unsafe_allow_html=True)
+            # 各行に drag handle 風アイコン + ファイル名 + メタ情報
+            def fmt_item(fd: FileData) -> str:
+                meta_parts = []
+                if fd.subject:
+                    meta_parts.append(f"Subject={fd.subject}")
+                if fd.task:
+                    meta_parts.append(f"Task={fd.task}")
+                if fd.trial:
+                    meta_parts.append(f"Trial={fd.trial}")
+                if fd.phase and fd.phase != "none":
+                    meta_parts.append(f"Phase={fd.phase}")
+                meta = "  ·  ".join(meta_parts)
+                # アイテム文字列は識別キーも兼ねるので、先頭にドラッグハンドル + ファイル名(拡張子無)
+                label = display_file_name(fd.file_name)
+                return f"⋮⋮   {label}" + (f"      —   {meta}" if meta else "")
+
+            items = [fmt_item(fd) for fd in valid_files]
+            # 並び順 ⇄ ファイルのマップ (ラベル文字列 -> FileData)
+            label_to_fd = {item: fd for item, fd in zip(items, valid_files)}
+
+            sorted_items = sort_items(items, direction="vertical", custom_style=SORTABLE_CSS, key="dd_sortable")
+
+            if sorted_items and sorted_items != items:
+                for i, item in enumerate(sorted_items, start=1):
+                    fd = label_to_fd.get(item)
+                    if fd:
+                        fd.order = i
+                st.rerun()
+        else:
+            st.warning("`streamlit-sortables` がインストールされていません。`pip install streamlit-sortables` してください。")
 
         # クイック並び替えボタン
         st.markdown("---")
@@ -1718,7 +1781,8 @@ def tab_paired_compare(state: dict, cfg: dict) -> None:
 
     pair_keys = st.multiselect(
         "Pairing key (同じ値のものを1グループにする)",
-        ["Subject", "Task", "Trial", "Memo"], default=["Subject", "Task", "Trial"], key="gc2_pair_keys",
+        ["Subject", "Task", "Trial", "Memo"], default=[], key="gc2_pair_keys",
+        help="例: Subject + Task + Trial を選ぶと、同じ被験者・同じタスク・同じ試行 のファイルが1グループになります。何も選ばないと全ファイルが 1 グループ扱い。",
     )
     diff_field = st.selectbox(
         "Distinguish files within group by (色分け)",
