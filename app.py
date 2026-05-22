@@ -29,6 +29,13 @@ import streamlit as st
 from plotly.subplots import make_subplots
 from scipy import signal
 
+# 任意のドラッグ&ドロップ並び替えコンポーネント
+try:
+    from streamlit_sortables import sort_items  # type: ignore
+    HAS_SORTABLES = True
+except Exception:
+    HAS_SORTABLES = False
+
 
 # =====================================================================
 # 定数 / 既定値
@@ -866,25 +873,34 @@ def tab_overview(state: dict, cfg: dict) -> None:
             except Exception:
                 pass
 
-    # === 一括並び替え ===
-    with st.expander("🔢 Bulk reorder files (一括並び替え)", expanded=False):
-        st.caption(
-            "ファイル名を **表示したい順番に1行ずつ** 並べてください。拡張子はあってもなくても OK。"
-            "ここで設定した順序は、全タブの棒グラフに反映されます。"
-        )
+    # === 並び替え ===
+    with st.expander("🔢 Reorder files (並び替え)", expanded=True):
         valid_files = [fd for fd in state["files"].values() if not fd.is_fft_csv and fd.status != "Error"]
         valid_files.sort(key=lambda f: (getattr(f, "order", 0) or 999999, f.file_name))
-        current_lines = "\n".join(fd.file_name for fd in valid_files)
-        new_order_text = st.text_area(
-            "Order (1 file per line)", value=current_lines,
-            height=max(28 * len(valid_files) + 30, 120), key="bulk_order_text",
-            help="例: Miyu-Open-1.CSV / Miyu-Close-1.CSV / Miyu-Open-2.CSV / Miyu-Close-2.CSV ... のように書くと、Open と Close が交互に並びます。",
-        )
-        col_o1, col_o2, col_o3 = st.columns([1, 1, 2])
-        with col_o1:
+
+        if HAS_SORTABLES:
+            st.caption("🖱️ **ドラッグ&ドロップ** で並び替えできます。変更すると自動で全タブのグラフに反映されます。")
+            items = [fd.file_name for fd in valid_files]
+            sorted_items = sort_items(items, direction="vertical", key="dd_sortable")
+            # 並び順が変わったら fd.order を更新
+            if sorted_items and sorted_items != items:
+                for i, name in enumerate(sorted_items, start=1):
+                    fd = state["files"].get(name)
+                    if fd:
+                        fd.order = i
+                st.rerun()
+            # 現在の並び順表示
+            current_labels = [display_file_name(n) for n in (sorted_items or items)]
+            st.markdown("**現在の表示順:** " + " → ".join(current_labels))
+        else:
+            st.warning("`streamlit-sortables` がインストールされていません。テキスト入力での並び替えを使ってください。")
+            current_lines = "\n".join(fd.file_name for fd in valid_files)
+            new_order_text = st.text_area(
+                "Order (1 file per line)", value=current_lines,
+                height=max(28 * len(valid_files) + 30, 120), key="bulk_order_text",
+            )
             if st.button("Apply order", type="primary", key="apply_order"):
                 tokens = [s.strip() for s in new_order_text.splitlines() if s.strip()]
-                # 完全一致 → 拡張子無視一致 の順で照合
                 name_set = {fd.file_name: fd for fd in state["files"].values()}
                 name_set_noext = {display_file_name(fd.file_name): fd for fd in state["files"].values()}
                 applied = 0
@@ -895,9 +911,12 @@ def tab_overview(state: dict, cfg: dict) -> None:
                         applied += 1
                 st.success(f"{applied} ファイルに順序を適用しました")
                 st.rerun()
-        with col_o2:
-            if st.button("Auto-alternate (Task)", key="auto_alt"):
-                # Task ごとにグループ化して、各 Task の i 番目を交互に並べる
+
+        # クイック並び替えボタン (どちらの方式でも使える)
+        st.markdown("---")
+        col_q1, col_q2, col_q3 = st.columns(3)
+        with col_q1:
+            if st.button("🔄 Auto-alternate (Task)", key="auto_alt", help="Task ごとに i 番目を交互に並べる (例: Open-1, Close-1, Open-2, Close-2, ...)"):
                 by_task: dict[str, list[FileData]] = {}
                 for fd in valid_files:
                     by_task.setdefault(fd.task, []).append(fd)
@@ -912,10 +931,17 @@ def tab_overview(state: dict, cfg: dict) -> None:
                             by_task[task][i].order = order_counter
                 st.success("Task ごとの i 番目で交互に並べました")
                 st.rerun()
-        with col_o3:
-            if st.button("Reset (alphabetical)", key="reset_order"):
+        with col_q2:
+            if st.button("🔤 Alphabetical", key="reset_order", help="ファイル名のアルファベット順に戻す"):
                 for i, fd in enumerate(sorted(valid_files, key=lambda f: f.file_name), start=1):
                     fd.order = i
+                st.rerun()
+        with col_q3:
+            if st.button("⏱ Upload order", key="upload_order", help="アップロードした順番に戻す"):
+                # Re-assign by current dict insertion order (= upload order)
+                for i, fd in enumerate(state["files"].values(), start=1):
+                    if not fd.is_fft_csv and fd.status != "Error":
+                        fd.order = i
                 st.rerun()
 
     # 警告類
