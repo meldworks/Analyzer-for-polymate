@@ -440,6 +440,75 @@ def band_power_from_spec(spctgram: np.ndarray, freq: np.ndarray, lo: float, hi: 
     return np.abs(spctgram[mask, :]).mean(axis=0)
 
 
+def detect_r_peaks(sig_array: np.ndarray, fs: float) -> np.ndarray:
+    """ECG信号から R ピーク (心拍ピーク) を検出する。
+
+    シンプルな閾値方式: 信号の絶対値の標準偏差 × 2 を超えるピーク。
+    最小ピーク間隔 = 0.3秒 (= 最大 200 BPM 相当)。
+    返り値: ピークインデックス配列。
+    """
+    if len(sig_array) < int(fs):
+        return np.array([], dtype=int)
+    # 中心化 & 絶対値で大きいピークを目立たせる (R 波は正負どちらの場合もある)
+    centered = sig_array - np.nanmean(sig_array)
+    # R 波の方向 (正/負どちらが大きいか) を見る
+    if np.abs(np.max(centered)) > np.abs(np.min(centered)):
+        sig_for_peak = centered
+    else:
+        sig_for_peak = -centered
+    # 閾値: 平均 + 標準偏差×2
+    threshold = np.nanmean(sig_for_peak) + 2.0 * np.nanstd(sig_for_peak)
+    min_distance = int(fs * 0.3)  # 200 BPM 相当
+    peaks, _ = signal.find_peaks(sig_for_peak, height=threshold, distance=min_distance)
+    return peaks
+
+
+def compute_ecg_metrics(sig_array: np.ndarray, fs: float) -> dict:
+    """ECG 信号から心拍数・HRV 指標を計算する。
+
+    返り値の辞書:
+        - hr_mean: 平均心拍数 [bpm]
+        - hr_std: 心拍数の標準偏差 [bpm]
+        - hr_min, hr_max
+        - rr_mean_ms, rr_std_ms: RR 間隔の平均・標準偏差 [ms]
+        - sdnn_ms: SDNN (RR 間隔の標準偏差) — 自律神経全体の活動指標
+        - rmssd_ms: RMSSD (連続する RR 差分の RMS) — 副交感神経活動指標
+        - pnn50: 50ms 以上差のある連続 RR の割合 — 副交感神経活動指標
+        - n_beats: 検出した R 波の数
+        - peaks: R ピークインデックス
+        - rr_intervals_ms: RR 間隔配列 [ms]
+    """
+    peaks = detect_r_peaks(sig_array, fs)
+    if len(peaks) < 2 or fs <= 0:
+        return {"n_beats": int(len(peaks)), "peaks": peaks, "rr_intervals_ms": np.array([])}
+    rr_samples = np.diff(peaks)
+    rr_ms = rr_samples / fs * 1000.0  # ms
+    # 異常 RR (200ms 未満 or 2000ms 超) を除外
+    valid = (rr_ms >= 200) & (rr_ms <= 2000)
+    rr_ms_clean = rr_ms[valid]
+    if len(rr_ms_clean) < 2:
+        return {"n_beats": int(len(peaks)), "peaks": peaks, "rr_intervals_ms": rr_ms}
+    hr_inst = 60000.0 / rr_ms_clean  # bpm
+    diff_rr = np.diff(rr_ms_clean)
+    rmssd = float(np.sqrt(np.mean(diff_rr ** 2))) if len(diff_rr) else float("nan")
+    pnn50 = float(np.mean(np.abs(diff_rr) > 50.0) * 100.0) if len(diff_rr) else float("nan")
+    return {
+        "n_beats": int(len(peaks)),
+        "peaks": peaks,
+        "rr_intervals_ms": rr_ms,
+        "rr_intervals_clean_ms": rr_ms_clean,
+        "hr_mean": float(np.mean(hr_inst)),
+        "hr_std": float(np.std(hr_inst)),
+        "hr_min": float(np.min(hr_inst)),
+        "hr_max": float(np.max(hr_inst)),
+        "rr_mean_ms": float(np.mean(rr_ms_clean)),
+        "rr_std_ms": float(np.std(rr_ms_clean)),
+        "sdnn_ms": float(np.std(rr_ms_clean)),
+        "rmssd_ms": rmssd,
+        "pnn50": pnn50,
+    }
+
+
 def alpha_peak_frequency(mean_psd: np.ndarray, freq: np.ndarray, lo: float = 7.0, hi: float = 13.0) -> float:
     """Alpha 帯域内のピーク周波数。見つからなければ NaN。"""
     mask = (freq >= lo) & (freq <= hi)
@@ -860,12 +929,18 @@ def tab_overview(state: dict, cfg: dict) -> None:
             suppressMovableColumns=True,
             domLayout="normal",
         )
+        # Streamlit のテーマに合わせる: light / dark 自動切り替え
+        try:
+            base_theme = st.get_option("theme.base") or "light"
+        except Exception:
+            base_theme = "light"
+        ag_theme = "alpine-dark" if base_theme == "dark" else "alpine"
         grid_response = AgGrid(
             df_view,
             gridOptions=gb.build(),
             update_mode=GridUpdateMode.MODEL_CHANGED,
             data_return_mode=DataReturnMode.AS_INPUT,
-            theme="alpine",
+            theme=ag_theme,
             fit_columns_on_grid_load=False,
             height=min(80 + 35 * len(df_view), 600),
             allow_unsafe_jscode=True,
@@ -2125,6 +2200,147 @@ def export_condition_mean(files: dict[str, FileData], cfg: dict, group_keys: tup
 
 
 # =====================================================================
+# Tab: ECG Analysis (心電解析)
+# =====================================================================
+
+def tab_ecg(state: dict, cfg: dict) -> None:
+    """ECG / Heart チャンネルから心拍数・HRV を計算するタブ。"""
+    st.header("❤️ ECG Analysis")
+    st.caption("Channel Type が `ECG` のチャンネルから心拍数 (HR) と HRV (SDNN/RMSSD/pNN50) を計算します。"
+               "アーティファクト除去 (大ピーク除去) は ECG の R 波を消す可能性があるので、サイドバーで OFF にすることを推奨します。")
+    files = filter_files(state["files"], cfg)
+    if not files:
+        st.info("表示するファイルがありません。")
+        return
+
+    # ECG 設定のチャンネルを抽出
+    ecg_targets: list[tuple[FileData, ChannelSetting]] = []
+    for fname, fd in files.items():
+        for cs in fd.channel_settings:
+            if cs.channel_type == "ECG":
+                ecg_targets.append((fd, cs))
+
+    if not ecg_targets:
+        st.warning("ECG タイプに設定されたチャンネルがありません。タブ2 Channel Settings で `Channel Type` を `ECG` に設定してください。")
+        return
+
+    # 全ファイルの ECG メトリクスを表に
+    rows = []
+    detail_data = {}
+    for fd, cs in ecg_targets:
+        if fd.sampling_rate is None:
+            continue
+        # アーティファクト除去は ECG では切る (R 波を消さないよう)
+        sig_arr, _ = get_processed_signal(
+            fd, cs.original_name, filt_on=cfg["filt_on"],
+            hpf=cfg["hpf"], lpf=cfg["lpf"], notch=cfg["notch"],
+            exclude_start=cfg["exclude_start"], exclude_end=cfg["exclude_end"],
+            peak_reject=False,  # ECG では大ピーク除去をスキップ
+        )
+        if len(sig_arr) < int(fd.sampling_rate):
+            continue
+        m = compute_ecg_metrics(sig_arr, fd.sampling_rate)
+        rows.append({
+            "File": fd.file_name,
+            "FileLabel": display_file_name(fd.file_name),
+            "Subject": fd.subject, "Task": fd.task, "Trial": fd.trial, "Phase": fd.phase,
+            "Channel": cs.display_name,
+            "N_beats": m.get("n_beats", 0),
+            "HR_mean[bpm]": m.get("hr_mean", np.nan),
+            "HR_std[bpm]": m.get("hr_std", np.nan),
+            "HR_min[bpm]": m.get("hr_min", np.nan),
+            "HR_max[bpm]": m.get("hr_max", np.nan),
+            "RR_mean[ms]": m.get("rr_mean_ms", np.nan),
+            "SDNN[ms]": m.get("sdnn_ms", np.nan),
+            "RMSSD[ms]": m.get("rmssd_ms", np.nan),
+            "pNN50[%]": m.get("pnn50", np.nan),
+        })
+        detail_data[fd.file_name] = (sig_arr, m, fd, cs)
+
+    if not rows:
+        st.warning("ECG 解析を計算できませんでした。データ長が短すぎる可能性があります。")
+        return
+
+    df = pd.DataFrame(rows)
+    st.subheader("Summary — per-file ECG metrics")
+    st.caption("📥 Export Report ZIP の `ECG_Analysis.csv` にもこのまま出力されます。")
+    st.dataframe(df, use_container_width=True)
+    state["_ecg_analysis"] = df
+
+    # 棒グラフ (ファイル間比較)
+    order_list = get_file_order_labels(state)
+    df_plot = apply_file_order(df, order_list, "FileLabel")
+    metric_pick = st.selectbox(
+        "Metric",
+        ["HR_mean[bpm]", "HR_std[bpm]", "RR_mean[ms]", "SDNN[ms]", "RMSSD[ms]", "pNN50[%]"],
+        index=0, key="ecg_metric",
+    )
+    color_by = st.selectbox("Color by", ["Task", "Phase", "Subject", "Trial", "(none)"], index=0, key="ecg_color")
+    color_arg = None if color_by == "(none)" else color_by
+    fig = px.bar(df_plot, x="FileLabel", y=metric_pick, color=color_arg,
+                 hover_data=["File", "Subject", "Task", "Phase", "Trial", "Channel"],
+                 title=f"{metric_pick} per file (ECG)")
+    fig.update_xaxes(categoryorder="array", categoryarray=order_list, tickangle=0, title_text="")
+    fig.update_layout(height=480, margin=dict(l=60, r=20, t=60, b=120), bargap=0.2)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 詳細表示 (1ファイルピックアップ)
+    st.markdown("---")
+    st.subheader("Detail — single file")
+    sel_file = st.selectbox("File", list(detail_data.keys()), key="ecg_detail_file")
+    sig_arr, m, fd, cs = detail_data[sel_file]
+    peaks = m.get("peaks", np.array([]))
+    fs = fd.sampling_rate or 1.0
+    t_axis = np.arange(len(sig_arr)) / fs + cfg["exclude_start"]
+
+    # ECG 波形 + R ピーク
+    fig_ecg = go.Figure()
+    fig_ecg.add_trace(go.Scatter(x=t_axis, y=sig_arr, mode="lines", name="ECG", line=dict(color="#e74c3c", width=1.2)))
+    if len(peaks) > 0:
+        fig_ecg.add_trace(go.Scatter(
+            x=t_axis[peaks], y=sig_arr[peaks], mode="markers",
+            name=f"R peaks (n={len(peaks)})",
+            marker=dict(color="#f1c40f", size=8, symbol="x"),
+        ))
+    fig_ecg.update_layout(
+        title=f"ECG waveform with detected R peaks  ({cs.display_name})",
+        xaxis_title="Time [s]", yaxis_title="Amplitude [uV]",
+        height=380, margin=dict(l=60, r=20, t=60, b=40),
+    )
+    st.plotly_chart(fig_ecg, use_container_width=True)
+
+    # 心拍数の時系列 (タコグラム風)
+    rr_clean = m.get("rr_intervals_clean_ms")
+    if rr_clean is not None and len(rr_clean) > 1:
+        hr_series = 60000.0 / rr_clean
+        # ピーク時刻 (1点目以降を使う)
+        peak_times = t_axis[peaks[1:1 + len(rr_clean)]] if len(peaks) >= 1 + len(rr_clean) else np.arange(len(rr_clean))
+        fig_hr = go.Figure()
+        fig_hr.add_trace(go.Scatter(x=peak_times, y=hr_series, mode="lines+markers", name="HR", line=dict(color="#3498db")))
+        fig_hr.add_hline(y=m.get("hr_mean", np.nan), line_dash="dot", line_color="gray", annotation_text=f"mean={m.get('hr_mean', 0):.1f} bpm")
+        fig_hr.update_layout(
+            title="Instantaneous heart rate",
+            xaxis_title="Time [s]", yaxis_title="HR [bpm]",
+            height=300, margin=dict(l=60, r=20, t=60, b=40),
+        )
+        st.plotly_chart(fig_hr, use_container_width=True)
+
+    # メトリクスのカード表示
+    if "hr_mean" in m:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("HR mean", f"{m['hr_mean']:.1f} bpm")
+        c2.metric("SDNN", f"{m['sdnn_ms']:.1f} ms")
+        c3.metric("RMSSD", f"{m['rmssd_ms']:.1f} ms")
+        c4.metric("pNN50", f"{m['pnn50']:.1f} %")
+
+    st.caption(
+        "⚠️ 解説: SDNN (自律神経の総合活動) / RMSSD・pNN50 (副交感神経活動の代表的指標)。"
+        "あくまで参考値であり、医療診断には用いないでください。"
+        "ECG 信号が低品質な場合、R ピーク検出が失敗することがあります。"
+    )
+
+
+# =====================================================================
 # Tab 11: Export Report
 # =====================================================================
 
@@ -2161,6 +2377,8 @@ def tab_export_report(state: dict, cfg: dict) -> None:
                 zf.writestr("Group_Comparison.csv", state["_paired_compare"].to_csv(index=False))
             if "_channel_quality" in state:
                 zf.writestr("Channel_Quality.csv", state["_channel_quality"].to_csv(index=False))
+            if "_ecg_analysis" in state:
+                zf.writestr("ECG_Analysis.csv", state["_ecg_analysis"].to_csv(index=False))
 
             # channel settings (per file)
             ch_settings = {fd.file_name: serialize_channel_settings(fd) for fd in state["files"].values() if not fd.is_fft_csv}
@@ -2247,7 +2465,7 @@ def main() -> None:
         "1. File Overview", "2. Channel Settings", "3. Waveform",
         "4. FFT / Spectrogram", "5. Band Power", "6. Per-file Summary",
         "7. Multi-file Comparison", "8. Group Comparison", "9. Channel Quality",
-        "10. FFT CSV Export", "11. Export Report",
+        "10. ❤️ ECG Analysis", "11. FFT CSV Export", "12. Export Report",
     ])
     with tabs[0]:
         tab_overview(state, cfg)
@@ -2268,8 +2486,10 @@ def main() -> None:
     with tabs[8]:
         tab_quality(state, cfg)
     with tabs[9]:
-        tab_fft_export(state, cfg)
+        tab_ecg(state, cfg)
     with tabs[10]:
+        tab_fft_export(state, cfg)
+    with tabs[11]:
         tab_export_report(state, cfg)
 
 
