@@ -1575,7 +1575,9 @@ def tab_group_compare(state: dict, cfg: dict) -> None:
         f"集計方法: 各ファイル × 各チャンネルについて時間平均した {metric} を 1 値として算出し、ファイル間で平均は取らずに並べます。"
     )
 
-    # ファイル × チャンネル のロング表
+    # 全メトリクスを一度に計算 (画面表示は metric だけだが Export 用に全部持つ)
+    all_metrics = ["Delta", "Theta", "Alpha1", "Alpha2", "Alpha", "Beta1", "Beta2", "Beta",
+                   "Gamma1", "Gamma2", "Total", "Alpha/Total", "Theta/Beta", "Beta/Alpha", "AlphaPeakFreq"]
     rows = []
     for fname in sel_files:
         fd = files[fname]
@@ -1589,22 +1591,27 @@ def tab_group_compare(state: dict, cfg: dict) -> None:
                 continue
             d = specs[cs.display_name]
             bp = compute_band_power_table(d["spctgram"], d["freq"], d["t"])
-            if metric == "AlphaPeakFreq":
-                v = alpha_peak_frequency(d["spctgram"].mean(axis=1), d["freq"])
-            else:
-                v = float(bp[metric].mean()) if metric in bp.columns else np.nan
-            rows.append({
+            mean_psd = d["spctgram"].mean(axis=1)
+            row = {
                 "File": fname, "FileLabel": display_file_name(fname),
                 "Channel": cs.display_name,
                 "Subject": fd.subject, "Task": fd.task, "Trial": fd.trial, "Phase": fd.phase,
-                metric: float(v),
-            })
+            }
+            for m in all_metrics:
+                if m == "AlphaPeakFreq":
+                    row[m] = float(alpha_peak_frequency(mean_psd, d["freq"]))
+                elif m in bp.columns:
+                    row[m] = float(np.nanmean(bp[m]))
+                else:
+                    row[m] = np.nan
+            rows.append(row)
     df = pd.DataFrame(rows)
     if df.empty:
         st.warning("値を計算できませんでした。解析対象区間や FFT 窓幅を確認してください。")
         return
 
-    st.subheader(f"All values ({metric}) — file × channel")
+    st.subheader(f"All values — file × channel (全メトリクスを表示)")
+    st.caption("📥 Export Report ZIP の `group_comparison.csv` にもこの全メトリクスがそのまま出力されます。")
     st.dataframe(df, use_container_width=True)
     state["_group_compare"] = df
 
@@ -1733,7 +1740,9 @@ def tab_paired_compare(state: dict, cfg: dict) -> None:
         st.info("該当するグループがありません。Pairing key を変更するか、≥2 のチェックを外してください。")
         return
 
-    # 値を計算
+    # 全メトリクスを一度に計算 (画面表示は metric だけだが Export 用に全部持つ)
+    all_metrics = ["Delta", "Theta", "Alpha1", "Alpha2", "Alpha", "Beta1", "Beta2", "Beta",
+                   "Gamma1", "Gamma2", "Total", "Alpha/Total", "Theta/Beta", "Beta/Alpha", "AlphaPeakFreq"]
     rows = []
     for kt, fds in shown_groups.items():
         group_label = " / ".join(f"{k}={v}" for k, v in zip(pair_keys, kt) if v) or "(all)"
@@ -1746,19 +1755,23 @@ def tab_paired_compare(state: dict, cfg: dict) -> None:
                     continue
                 d = specs[cs.display_name]
                 bp = compute_band_power_table(d["spctgram"], d["freq"], d["t"])
-                if metric == "AlphaPeakFreq":
-                    v = alpha_peak_frequency(d["spctgram"].mean(axis=1), d["freq"])
-                else:
-                    v = float(bp[metric].mean()) if metric in bp.columns else np.nan
-                rows.append({
+                mean_psd = d["spctgram"].mean(axis=1)
+                row = {
                     "Group": group_label,
                     "File": fd.file_name,
                     "FileLabel": display_file_name(fd.file_name),
                     "Channel": cs.display_name,
                     "Subject": fd.subject, "Task": fd.task, "Trial": fd.trial, "Phase": fd.phase,
                     "DiffField": str(getattr(fd, diff_attr, "")),
-                    metric: float(v),
-                })
+                }
+                for m in all_metrics:
+                    if m == "AlphaPeakFreq":
+                        row[m] = float(alpha_peak_frequency(mean_psd, d["freq"]))
+                    elif m in bp.columns:
+                        row[m] = float(np.nanmean(bp[m]))
+                    else:
+                        row[m] = np.nan
+                rows.append(row)
     df = pd.DataFrame(rows)
     if df.empty:
         st.warning("値を計算できませんでした。")
