@@ -29,13 +29,6 @@ import streamlit as st
 from plotly.subplots import make_subplots
 from scipy import signal
 
-# 任意のドラッグ&ドロップ並び替えコンポーネント
-try:
-    from streamlit_sortables import sort_items  # type: ignore
-    HAS_SORTABLES = True
-except Exception:
-    HAS_SORTABLES = False
-
 
 # =====================================================================
 # 定数 / 既定値
@@ -874,49 +867,41 @@ def tab_overview(state: dict, cfg: dict) -> None:
                 pass
 
     # === 並び替え ===
-    with st.expander("🔢 Reorder files (並び替え)", expanded=True):
+    with st.expander("🔢 Reorder files (並び替え)", expanded=False):
         valid_files = [fd for fd in state["files"].values() if not fd.is_fft_csv and fd.status != "Error"]
         valid_files.sort(key=lambda f: (getattr(f, "order", 0) or 999999, f.file_name))
 
-        if HAS_SORTABLES:
-            st.caption("🖱️ **ドラッグ&ドロップ** で並び替えできます。変更すると自動で全タブのグラフに反映されます。")
-            items = [fd.file_name for fd in valid_files]
-            sorted_items = sort_items(items, direction="vertical", key="dd_sortable")
-            # 並び順が変わったら fd.order を更新
-            if sorted_items and sorted_items != items:
-                for i, name in enumerate(sorted_items, start=1):
-                    fd = state["files"].get(name)
-                    if fd:
-                        fd.order = i
-                st.rerun()
-            # 現在の並び順表示
-            current_labels = [display_file_name(n) for n in (sorted_items or items)]
-            st.markdown("**現在の表示順:** " + " → ".join(current_labels))
-        else:
-            st.warning("`streamlit-sortables` がインストールされていません。テキスト入力での並び替えを使ってください。")
-            current_lines = "\n".join(fd.file_name for fd in valid_files)
-            new_order_text = st.text_area(
-                "Order (1 file per line)", value=current_lines,
-                height=max(28 * len(valid_files) + 30, 120), key="bulk_order_text",
-            )
-            if st.button("Apply order", type="primary", key="apply_order"):
-                tokens = [s.strip() for s in new_order_text.splitlines() if s.strip()]
-                name_set = {fd.file_name: fd for fd in state["files"].values()}
-                name_set_noext = {display_file_name(fd.file_name): fd for fd in state["files"].values()}
-                applied = 0
-                for i, tok in enumerate(tokens, start=1):
-                    fd = name_set.get(tok) or name_set_noext.get(display_file_name(tok))
-                    if fd:
-                        fd.order = i
-                        applied += 1
-                st.success(f"{applied} ファイルに順序を適用しました")
-                st.rerun()
+        st.caption("⬆⬇ ボタンで上下に並び替えできます。変更は即座に全タブのグラフに反映されます。")
 
-        # クイック並び替えボタン (どちらの方式でも使える)
+        # 上下ボタンで並び替え
+        n = len(valid_files)
+        for idx, fd in enumerate(valid_files):
+            cols = st.columns([1, 1, 8])
+            with cols[0]:
+                # 一番上のファイルは ↑ を無効化
+                if st.button("⬆", key=f"up_{fd.file_name}", disabled=(idx == 0), use_container_width=True):
+                    # idx と idx-1 の order を入れ替え
+                    prev = valid_files[idx - 1]
+                    fd.order, prev.order = prev.order, fd.order
+                    st.rerun()
+            with cols[1]:
+                # 一番下のファイルは ↓ を無効化
+                if st.button("⬇", key=f"down_{fd.file_name}", disabled=(idx == n - 1), use_container_width=True):
+                    nxt = valid_files[idx + 1]
+                    fd.order, nxt.order = nxt.order, fd.order
+                    st.rerun()
+            with cols[2]:
+                # ファイル名 + 補足情報
+                task_info = f"`{fd.task}`" if fd.task else ""
+                trial_info = f" / Trial {fd.trial}" if fd.trial else ""
+                st.markdown(f"**{idx + 1}.** {display_file_name(fd.file_name)} &nbsp; <span style='color:#888;font-size:0.85em'>{task_info}{trial_info}</span>", unsafe_allow_html=True)
+
+        # クイック並び替えボタン
         st.markdown("---")
+        st.caption("⚡ クイック並び替え")
         col_q1, col_q2, col_q3 = st.columns(3)
         with col_q1:
-            if st.button("🔄 Auto-alternate (Task)", key="auto_alt", help="Task ごとに i 番目を交互に並べる (例: Open-1, Close-1, Open-2, Close-2, ...)"):
+            if st.button("🔄 Task 交互", key="auto_alt", help="Task ごとに i 番目を交互に並べる (例: Open-1, Close-1, Open-2, Close-2, ...)", use_container_width=True):
                 by_task: dict[str, list[FileData]] = {}
                 for fd in valid_files:
                     by_task.setdefault(fd.task, []).append(fd)
@@ -929,16 +914,14 @@ def tab_overview(state: dict, cfg: dict) -> None:
                         if i < len(by_task[task]):
                             order_counter += 1
                             by_task[task][i].order = order_counter
-                st.success("Task ごとの i 番目で交互に並べました")
                 st.rerun()
         with col_q2:
-            if st.button("🔤 Alphabetical", key="reset_order", help="ファイル名のアルファベット順に戻す"):
+            if st.button("🔤 名前順", key="reset_order", help="ファイル名のアルファベット順", use_container_width=True):
                 for i, fd in enumerate(sorted(valid_files, key=lambda f: f.file_name), start=1):
                     fd.order = i
                 st.rerun()
         with col_q3:
-            if st.button("⏱ Upload order", key="upload_order", help="アップロードした順番に戻す"):
-                # Re-assign by current dict insertion order (= upload order)
+            if st.button("⏱ アップロード順", key="upload_order", help="アップロードした順番に戻す", use_container_width=True):
                 for i, fd in enumerate(state["files"].values(), start=1):
                     if not fd.is_fft_csv and fd.status != "Error":
                         fd.order = i
