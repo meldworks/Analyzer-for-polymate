@@ -184,12 +184,12 @@ Time, Delta, Theta, Alpha1, Alpha2, Beta1, Beta2, Gamma1, Gamma2, F0, F0.29, F0.
 
 | ファイル | 内容 |
 |---------|------|
-| `summary_by_file.csv` | 各ファイルのメタ情報一覧 |
-| `summary_by_condition.csv` | 帯域パワーのファイル/チャンネル別表 |
-| `condition_comparison.csv` | Per-file Summary の全ファイル×チャンネル一覧 |
-| `group_comparison.csv` | 2-Group Comparison の結果表 |
-| `paired_comparison.csv` | Paired Comparison の結果表 |
-| `channel_quality.csv` | チャンネル品質指標 |
+| `File_Overview.csv` | タブ1 File Overview: 各ファイルのメタ情報一覧 |
+| `Band_Power.csv` | タブ5 Band Power: 帯域パワーのファイル/チャンネル別表 |
+| `Per-file_Summary.csv` | タブ6 Per-file Summary: 全ファイル×チャンネル一覧 (全メトリクス) |
+| `Multi-file_Comparison.csv` | タブ7 Multi-file Comparison: 全ファイル個別比較 (全メトリクス) |
+| `Group_Comparison.csv` | タブ8 Group Comparison: ペアリングキーごとのファイル比較 (全メトリクス) |
+| `Channel_Quality.csv` | タブ9 Channel Quality: チャンネル品質指標 |
 | `channel_settings.json` | 全ファイルのチャンネル設定 |
 | `filename_rule_settings.json` | ファイル名ルール |
 | `analysis_settings.json` | 解析パラメータ (Exclude / FFT / フィルタ等) |

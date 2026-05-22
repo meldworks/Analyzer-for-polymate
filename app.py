@@ -1611,7 +1611,7 @@ def tab_group_compare(state: dict, cfg: dict) -> None:
         return
 
     st.subheader(f"All values — file × channel (全メトリクスを表示)")
-    st.caption("📥 Export Report ZIP の `group_comparison.csv` にもこの全メトリクスがそのまま出力されます。")
+    st.caption("📥 Export Report ZIP の `Multi-file_Comparison.csv` にもこの全メトリクスがそのまま出力されます。")
     st.dataframe(df, use_container_width=True)
     state["_group_compare"] = df
 
@@ -2103,19 +2103,19 @@ def tab_export_report(state: dict, cfg: dict) -> None:
                     "duration": fd.duration, "sampling_rate": fd.sampling_rate,
                     "unit": fd.unit, "channels": len(fd.channel_list), "status": fd.status,
                 })
-            zf.writestr("summary_by_file.csv", pd.DataFrame(rows).to_csv(index=False))
+            # 出力 CSV のファイル名はタブ名と一致させる
+            zf.writestr("File_Overview.csv", pd.DataFrame(rows).to_csv(index=False))
 
-            # band power table
             if "_band_power_table" in state:
-                zf.writestr("summary_by_condition.csv", state["_band_power_table"].to_csv(index=False))
+                zf.writestr("Band_Power.csv", state["_band_power_table"].to_csv(index=False))
             if "_condition_comparison" in state:
-                zf.writestr("condition_comparison.csv", state["_condition_comparison"].to_csv(index=False))
+                zf.writestr("Per-file_Summary.csv", state["_condition_comparison"].to_csv(index=False))
             if "_group_compare" in state:
-                zf.writestr("group_comparison.csv", state["_group_compare"].to_csv(index=False))
+                zf.writestr("Multi-file_Comparison.csv", state["_group_compare"].to_csv(index=False))
             if "_paired_compare" in state:
-                zf.writestr("paired_comparison.csv", state["_paired_compare"].to_csv(index=False))
+                zf.writestr("Group_Comparison.csv", state["_paired_compare"].to_csv(index=False))
             if "_channel_quality" in state:
-                zf.writestr("channel_quality.csv", state["_channel_quality"].to_csv(index=False))
+                zf.writestr("Channel_Quality.csv", state["_channel_quality"].to_csv(index=False))
 
             # channel settings (per file)
             ch_settings = {fd.file_name: serialize_channel_settings(fd) for fd in state["files"].values() if not fd.is_fft_csv}
